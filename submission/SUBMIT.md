@@ -4,7 +4,7 @@ Everything below is ready except the steps that need your GitHub and X accounts.
 
 ## 1. Put the plugin in a public repo (done)
 
-Pushed to https://github.com/mornslight/hermes-snare at commit `3481b1f249a4ebd39ebbc151eb8a25ffdeecc2d0`.
+Pushed to https://github.com/mornslight/hermes-snare at commit `435f1de4faf3f27f33ee309a9ce0522388c344bf`.
 Still yours: paste the repo description on GitHub (gear icon next to About).
 
 For reference, the commands were:
@@ -19,7 +19,7 @@ git add .
 git commit -m "feat: snare, a prompt injection tripwire for Hermes Agent"
 git remote add origin https://github.com/mornslight/hermes-snare.git
 git push -u origin main
-git rev-parse HEAD          # pinned: 3481b1f249a4ebd39ebbc151eb8a25ffdeecc2d0
+git rev-parse HEAD          # pinned: 435f1de4faf3f27f33ee309a9ce0522388c344bf
 ```
 
 Before the commit, swap your name or handle in for "Jackson" in `snare/plugin.yaml` (`author:`) and
