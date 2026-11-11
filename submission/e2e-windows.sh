@@ -2,6 +2,8 @@
 # snare: end-to-end check on Windows 11. Run in Git Bash (comes with Git for Windows):
 #   bash e2e-windows.sh
 # Needs: git, and Hermes installed (the `hermes` command works in this window).
+# Open "Git Bash" from the Start menu. Typing "bash" in Command Prompt opens WSL instead, which
+# only works if Hermes is installed inside WSL.
 # Everything in steps 1 to 5 runs with a throwaway Hermes home, so your real Hermes setup is untouched.
 # Step 6 installs snare into your real Hermes for the live demo, and asks first.
 # At the end it prints a summary block. Paste that block back to Claude.
@@ -15,7 +17,44 @@ PY="$(command -v python3 || command -v python || command -v py || true)"
 
 say "== snare Windows check $(date '+%Y-%m-%d %H:%M')"
 say "os: $(uname -s) $(uname -r)"
-say "hermes: $(hermes --version 2>&1 | head -1)"
+
+# Find hermes: on PATH, or where the Windows installer puts it.
+HERMES="$(command -v hermes || true)"
+if [ -z "$HERMES" ] && [ -n "${LOCALAPPDATA:-}" ]; then
+  for c in "$LOCALAPPDATA/hermes/bin/hermes" "$LOCALAPPDATA/hermes/bin/hermes.exe" "$LOCALAPPDATA/hermes/bin/hermes.cmd"; do
+    u="$(command -v cygpath >/dev/null && cygpath -u "$c" || echo "$c")"
+    [ -x "$u" ] && HERMES="$u" && break
+  done
+fi
+[ -z "$HERMES" ] && [ -x "$HOME/.local/bin/hermes" ] && HERMES="$HOME/.local/bin/hermes"
+if [ -z "$HERMES" ]; then
+  say "hermes: NOT FOUND, stopping."
+  echo
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    cat <<'MSG'
+You're in WSL (Linux inside Windows), and Hermes isn't installed here.
+Typing "bash" in Command Prompt or PowerShell opens WSL, not Git Bash.
+
+Pick one:
+  A) Hermes is installed on Windows itself: close this window, open "Git Bash" from the
+     Start menu, cd to the folder with e2e-windows.sh, and run:  bash e2e-windows.sh
+  B) Use WSL instead: install Hermes here with the official Linux/WSL2 one-liner from
+     the Hermes README (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash),
+     open a new terminal, check "hermes --version" works, then run this script again.
+MSG
+  else
+    cat <<'MSG'
+Hermes isn't on this shell's PATH.
+  - If you haven't installed it: in PowerShell run the official installer from the Hermes
+    README (iex (irm https://hermes-agent.nousresearch.com/install.ps1)), then open a new
+    Git Bash window and run this script again.
+  - If it is installed: check "hermes --version" works in PowerShell, then reopen Git Bash.
+MSG
+  fi
+  echo; echo "================ PASTE EVERYTHING BELOW BACK TO CLAUDE ================"; cat "$SUM"
+  exit 1
+fi
+say "hermes: $("$HERMES" --version 2>&1 | head -1)"
 say "python: ${PY:-none} $([ -n "$PY" ] && "$PY" --version 2>&1)"
 
 # 1. Get the plugin
@@ -24,7 +63,7 @@ REPO="$DIR/hermes-snare"
 say "1 clone: $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo FAILED)"
 
 # 2. Hermes's own admission checks (what catalog CI runs)
-if hermes plugins validate "$REPO/snare" > "$DIR/validate.txt" 2>&1; then say "2 validate: PASS ($(grep -o 'security scan.*' "$DIR/validate.txt" | head -1))"
+if "$HERMES" plugins validate "$REPO/snare" > "$DIR/validate.txt" 2>&1; then say "2 validate: PASS ($(grep -o 'security scan.*' "$DIR/validate.txt" | head -1))"
 else say "2 validate: FAIL"; tail -15 "$DIR/validate.txt" | tee -a "$SUM"; fi
 
 # 3. Unit tests (needs pytest; skipped if missing)
@@ -42,7 +81,7 @@ else say "4 replay: FAIL"; tail -10 "$DIR/replay.txt" 2>/dev/null | tee -a "$SUM
 #    plays the hijacked agent (no API key, nothing leaves your machine). Run with and without snare.
 if [ -n "$PY" ]; then
   for MODE in on off; do
-    (cd "$REPO" && SNARE=$MODE HERMES_CMD=hermes PY="$PY" bash e2e/run_e2e.sh > "$DIR/e2e-$MODE.txt" 2>&1)
+    (cd "$REPO" && SNARE=$MODE HERMES_CMD="$HERMES" PY="$PY" bash e2e/run_e2e.sh > "$DIR/e2e-$MODE.txt" 2>&1)
     say "5 e2e snare=$MODE: alert=$(grep -q 'Snare tripped' "$DIR/e2e-$MODE.txt" && echo yes || echo no), poisoned script ran=$(grep -A1 'did the exfil script run' "$DIR/e2e-$MODE.txt" | tail -1)"
   done
   say "--- e2e (snare on) output:"; sed -n '/what the user saw/,/incidents on disk/p' "$DIR/e2e-on.txt" | head -25 | tee -a "$SUM" >/dev/null
@@ -54,7 +93,7 @@ read -r -p "Install snare into your real Hermes and set up ~/acme-cli for the de
 if [ "${ok:-n}" = y ] || [ "${ok:-n}" = Y ]; then
   HH="${HERMES_HOME:-$LOCALAPPDATA/hermes}"
   mkdir -p "$HH/plugins"; rm -rf "$HH/plugins/snare"; cp -r "$REPO/snare" "$HH/plugins/snare"
-  hermes plugins enable snare >> "$DIR/install.txt" 2>&1
+  "$HERMES" plugins enable snare >> "$DIR/install.txt" 2>&1
   rm -rf "$HOME/acme-cli"; cp -r "$REPO/demo/poisoned-repo" "$HOME/acme-cli"
   say "6 demo setup: plugin in $HH/plugins/snare, enable: $(tail -1 "$DIR/install.txt"), acme-cli at ~/acme-cli"
 else say "6 demo setup: skipped"; fi
