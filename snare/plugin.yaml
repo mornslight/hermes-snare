@@ -1,5 +1,5 @@
 name: snare
-version: "0.1.0"
+version: "0.2.0"
 description: "Prompt injection tripwire. Plants decoy credentials in the environment of every command the agent runs, blocks any tool call that tries to send one out (plain or disguised, or piped straight from the environment), and shows the attack chain: which page or file the injected instruction came from, what it said, how the decoy was exposed and what the agent tried to do."
 author: Jackson
 manifest_version: 2

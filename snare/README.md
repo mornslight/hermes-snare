@@ -39,12 +39,37 @@ injection looks like.
 
 | Command | |
 |---|---|
-| `/snare` or `/snare status` | What is planted, how many incidents, which sessions are locked |
+| `/snare` or `/snare status` | Whether the decoys are really reaching your commands, how many incidents, which sessions are locked |
+| `/snare selftest` | Run the live backend check again, on any backend |
 | `/snare incidents` | The last ten incidents, one line each |
 | `/snare last` / `/snare report <id>` | The full attack chain of an incident |
 | `/snare reset [all]` | Lift the lockdown on this session (or all) |
 | `/snare rotate` | Generate new decoys |
 | `/snare test <text>` | Check a string for decoys and injection markers |
+
+## Is the trap actually set here?
+
+"No incidents" should mean nothing tripped, not that the trap was never set. Hermes only passes
+plugin session variables to the **local** terminal backend, so snare checks:
+
+- **At startup** (no commands run): is `env_canaries` on, did Hermes accept the decoy variables,
+  and which terminal backend is configured. If the decoys can't reach your commands (Docker, SSH,
+  Modal, Daytona or any other non-local backend, or an old Hermes) it logs a warning.
+- **On `/snare status`** with the local backend, and on `/snare selftest` with any backend: one
+  harmless command through Hermes's own terminal tool (`ctx.dispatch_tool`), so it runs wherever
+  the agent's commands really run. It prints which decoy *names* it sees, never their values.
+
+`/snare status` then shows one of:
+
+| | |
+|---|---|
+| `Decoys: active on the local backend` | A live check saw the decoys in a command's environment. |
+| `Decoys: NOT active here` | The backend doesn't get them (with the reason). Blocking is still on, but a hijacked agent won't find decoys there, so the trap rarely fires. |
+| `Decoys: not verified yet` | Expected to work, not proven, for example a check run outside a chat. Run `/snare selftest` from a chat. |
+| `Decoys: off` | `env_canaries` is off, or every decoy name is already set in your environment. |
+
+A conclusive live result is reused until the backend changes, so status doesn't run a command
+every time. Status never starts a remote backend by itself; `/snare selftest` does.
 
 ## Install
 
@@ -72,6 +97,8 @@ Only public surfaces: `pre_tool_call` (the tripwire, returns `block` or `approve
 - The decoys live in the environment of commands on the **local** terminal backend. On Docker, SSH
   or other remote backends Hermes does not pass plugin session variables, so the environment trap
   is inactive there; leaks of a decoy that reaches the agent another way are still blocked.
+  snare tells you which case you are in: a warning at startup and the `Decoys:` line of
+  `/snare status` (see "Is the trap actually set here?").
 - The injection markers are heuristics used to *name the source*. They never decide a block.
 - The read ledger lives in memory, so attribution covers the current gateway process.
 - Lockdown asks through Hermes's approval prompt, so in YOLO or other auto-approve modes it is advisory. The leaking call itself is always blocked.
@@ -86,8 +113,11 @@ Only public surfaces: `pre_tool_call` (the tripwire, returns `block` or `approve
   when no trap fires.
 - **Environment**: adds the three decoy variables to commands the agent runs on the local backend.
 - **Reads outside its own data**: before a terminal command runs a local script (`bash setup.sh`, `./install`), snare reads that script (read-only, up to 64 KB) to check it for the same pattern. Nothing from it is stored unless a trap fires.
+- **Commands it runs**: on `/snare status` (local backend, until one check is conclusive) and on
+  `/snare selftest`, one command through Hermes's terminal tool that prints which decoy names are
+  set, never their values. It runs nothing at startup or on its own.
 - **Prompt**: none. Replies change only when an alert is shown or a decoy is redacted.
-- No network calls, no shell commands, no background processes, no real credentials, no telemetry,
+- No network calls, no background processes, no real credentials, no telemetry,
   no Python dependencies.
 
 ## License

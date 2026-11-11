@@ -24,6 +24,7 @@ from . import canaries as _canaries
 from . import chain as _chain
 from . import detect as _detect
 from . import report as _report
+from . import selftest as _selftest
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,10 @@ class Snare:
         self.canaries = self._load_canaries()
         self.matcher = _canaries.Matcher(self.canaries)
         self.env_names = self._plantable_names()
+        # Startup self-test result (set by register()), replaced by a live probe when one runs.
+        self.selftest: Optional[_selftest.Result] = None
+        self._registered: Optional[bool] = True if ctx is not None else None
+        self._reg_error = ""
 
     # --- setup ---------------------------------------------------------------------------
     def _cfg(self, key: str, default: Any) -> Any:
@@ -209,18 +214,56 @@ class Snare:
                     f"- {m}" for m in entry["more"])
             return text
 
+    # --- backend self-test ---------------------------------------------------------------------
+    def _static_check(self) -> _selftest.Result:
+        return _selftest.static_check(
+            enabled=bool(self._cfg("env_canaries", True)), names=self.env_names,
+            registered=self._registered, reg_error=self._reg_error)
+
+    def startup_selftest(self, registered: Optional[bool], error: str = "") -> _selftest.Result:
+        """Config-only check at load time (no commands run). Warns when the env trap is not set."""
+        self._registered, self._reg_error = registered, error
+        self.selftest = self._static_check()
+        if self.selftest.state == _selftest.INACTIVE:
+            logger.warning("snare: decoys are not active here: %s", self.selftest.detail)
+        else:
+            logger.info("snare: startup self-test: %s", self.selftest.line())
+        return self.selftest
+
+    def backend_check(self, force: bool = False, **kw: Any) -> _selftest.Result:
+        """The current answer for ``/snare status``. A conclusive live probe is reused while the
+        backend stays the same; on the local backend an unproven answer gets a live probe by
+        itself; ``force`` (``/snare selftest``) probes whatever the backend is."""
+        static = self._static_check()
+        prev = self.selftest
+        if static.state == _selftest.OFF:
+            result = static
+        elif (not force and prev is not None and prev.live and prev.backend == static.backend
+              and prev.state in (_selftest.ACTIVE, _selftest.INACTIVE)):
+            result = prev
+        elif force or static.state == _selftest.UNVERIFIED:
+            result = _selftest.live_probe(self.ctx, list(self.env_names), static, **kw)
+        else:
+            result = static
+        self.selftest = result
+        return result
+
     # --- /snare ------------------------------------------------------------------------------
     def command(self, raw_args: str = "", session_id: str = "", **kw: Any) -> str:
         parts = (raw_args or "").strip().split(None, 1)
         sub = parts[0].lower() if parts else "status"
         rest = parts[1] if len(parts) > 1 else ""
         if sub == "status":
+            check = self.backend_check(session_id=session_id, **kw)
             incidents = _report.read_incidents(self.data_dir, 1000)
             planted = ", ".join(self.env_names) or "none (names already set in your environment)"
-            return (f"Snare is armed. Decoys planted in command environments: {planted}.\n"
+            return (f"Snare is on. Decoy names: {planted}.\n"
+                    f"{check.line()}\n"
                     f"Incidents so far: {len(incidents)}. Locked sessions: {len(self._locked)}. "
                     f"Lockdown after a trip: {'on' if self.lockdown else 'off'}.\n"
                     f"Audit log: {self.data_dir / 'incidents.jsonl'}")
+        if sub in ("selftest", "check"):
+            return self.backend_check(force=True, session_id=session_id, **kw).line()
         if sub in ("incidents", "log"):
             rows = _report.read_incidents(self.data_dir, 10)
             if not rows:
@@ -258,7 +301,7 @@ class Snare:
             parts_out.append(f"injection markers: {', '.join(scan['labels'])} (score {scan['score']})"
                              if scan else "injection markers: none")
             return "\n".join(parts_out)
-        return "Usage: /snare [status|incidents|last|report <id>|reset [all]|rotate|test <text>]"
+        return "Usage: /snare [status|selftest|incidents|last|report <id>|reset [all]|rotate|test <text>]"
 
 
 def register(ctx: Any) -> None:
@@ -266,11 +309,18 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", snare.on_post_tool_call)
     ctx.register_hook("pre_tool_call", snare.on_pre_tool_call)
     ctx.register_hook("transform_llm_output", snare.on_transform_llm_output)
-    if hasattr(ctx, "register_session_env") and snare.env_names:
-        try:
-            ctx.register_session_env(list(snare.env_names), snare.session_env)
-        except (ValueError, TypeError) as exc:
-            logger.warning("snare: decoys not planted in the environment: %s", exc)
+    registered: Optional[bool] = None
+    error = ""
+    if hasattr(ctx, "register_session_env"):
+        registered = False
+        if snare.env_names:
+            try:
+                ctx.register_session_env(list(snare.env_names), snare.session_env)
+                registered = True
+            except (ValueError, TypeError) as exc:
+                error = str(exc)
+                logger.warning("snare: decoys not planted in the environment: %s", exc)
+    snare.startup_selftest(registered, error)
     if hasattr(ctx, "register_command"):
         ctx.register_command("snare", snare.command,
                              description="Prompt injection tripwire: status, incidents, reset, rotate")
