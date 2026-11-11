@@ -10,6 +10,7 @@ The plugin lives in [`snare/`](snare/); its README is the full documentation.
 ```
 snare/            the Hermes plugin (this is what the catalog installs)
 tests/            unit tests, plus an integration check against a Hermes checkout
+e2e/              end-to-end run: the real Hermes agent loop, with a scripted model playing the hijacked agent
 demo/             a booby-trapped README for the demo, and a model-free replay script
 ```
 
@@ -22,6 +23,13 @@ It sits outside the plugin directory and is never installed.
 python3 -m pytest -q tests                  # unit tests
 python3 demo/replay.py                      # see the alert without a model
 hermes plugins validate ./snare             # Hermes's own admission checks
+HERMES=../hermes-agent bash e2e/run_e2e.sh  # end to end through a Hermes checkout
 ```
+
+`e2e/run_e2e.sh` runs Hermes with snare enabled against the poisoned demo repo. The model is a
+local scripted stand-in (no API key) that reads the README and runs its activation step, so every
+other part is real: plugin loading, the agent loop, the terminal tool, the hooks and the report.
+`SNARE=off` runs the same attack without snare as a control, and `SCENARIO=comment` obeys the
+hidden HTML comment instead.
 
 MIT licensed.

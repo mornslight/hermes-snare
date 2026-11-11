@@ -41,6 +41,7 @@ INJECTION_RULES: list[tuple[str, int, re.Pattern]] = [
 ]
 
 _SNIPPET_MAX = 280
+_LINE_NO = re.compile(r"(?m)^[ \t]*\d{1,7}\|")
 
 
 def _collapse(text: str) -> str:
@@ -59,7 +60,8 @@ def scan_injection(text: str) -> Optional[dict[str, Any]]:
     """Score ``text`` for injected instructions. Returns ``None`` when nothing matched."""
     if not text:
         return None
-    text = text[:200_000]
+    # read_file returns numbered lines ("29|text"); drop the numbers so quotes read as the source.
+    text = _LINE_NO.sub("", text[:200_000])
     score, labels, quotes = 0, [], []
     for label, weight, pattern in INJECTION_RULES:
         m = pattern.search(text)

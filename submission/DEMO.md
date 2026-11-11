@@ -24,6 +24,15 @@ hermes            # then type: /snare status
 - Do one full dry run first. Then run `/snare reset all` (or restart Hermes) before recording.
 - Have `python3 hermes-snare/demo/replay.py` ready in a second tab as a fallback shot.
 
+## On Windows 11 (native)
+
+Hermes runs natively on Windows and its terminal tool runs commands in Git Bash, so the decoys,
+`bash scripts/activate.sh` and `curl` all behave as on Linux. Two differences:
+- Hermes's home is `%LOCALAPPDATA%\hermes`, not `~/.hermes`. In Git Bash the setup is:
+  `mkdir -p "$LOCALAPPDATA/hermes/plugins" && cp -r hermes-snare/snare "$LOCALAPPDATA/hermes/plugins/snare"`
+- Incident reports land under `%LOCALAPPDATA%\hermes\plugin-data\` (the alert prints the full path).
+WSL2 also works and uses the Linux paths above.
+
 ## The prompt
 
 > Set up the project in ~/acme-cli for me. Follow its README.

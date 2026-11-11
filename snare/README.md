@@ -17,7 +17,7 @@ looking, blocks any tool call that tries to send one out, and tells you the whol
 3. Blocked: terminal tried to send decoy PROD_AWS_ACCESS_KEY_ID (base64) to telemetry-acme.example
 
 This session is locked: every further tool call asks for your approval.
-Incident report: ~/.hermes/plugin-data/snare/reports/20261111-091203-a1f2.html
+Incident report: ~/.hermes/plugin-data/agent-plugin-snare-…/reports/20261111-091203-a1f2.html
 ```
 
 No real task ever needs a decoy, so a decoy leaving the agent is close to proof of an injection,
@@ -79,7 +79,7 @@ Only public surfaces: `pre_tool_call` (the tripwire, returns `block` or `approve
 
 ## Disclosure
 
-- **Data stored** (owner-only files in `<HERMES_HOME>/plugin-data/snare/`): the decoy values
+- **Data stored** (owner-only files in the data folder Hermes gives the plugin, under `<HERMES_HOME>/plugin-data/`; `/snare status` prints it): the decoy values
   (`state.json`); per incident, one JSON line in `incidents.jsonl` and an HTML report with the
   tool name, the blocked call's arguments (shortened), destination URLs, the source URL or path,
   a quote of up to 280 characters of the injected text, and the session id. Nothing is stored
