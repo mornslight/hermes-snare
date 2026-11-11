@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${PY:-python3}"
 if [ -n "${HERMES_CMD:-}" ]; then RUN_HERMES=("$HERMES_CMD")
 else RUN_HERMES=("$PY" "${HERMES:?set HERMES to a hermes-agent checkout, or HERMES_CMD=hermes}/hermes"); fi
-WORK="$(mktemp -d)"; PORT="${PORT:-18765}"
+WORK="${WORK:-$(mktemp -d)}"; mkdir -p "$WORK"; PORT="${PORT:-18765}"
 # Native Windows tools want C:/... paths, not Git Bash's /tmp/...
 if command -v cygpath >/dev/null 2>&1; then WORK="$(cygpath -m "$WORK")"; fi
 export HERMES_HOME="$WORK/home"
