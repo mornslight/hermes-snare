@@ -1,0 +1,31 @@
+name: snare
+version: "0.1.0"
+description: "Prompt injection tripwire. Plants decoy credentials in the environment of every command the agent runs, blocks any tool call that tries to send one out (plain or disguised, or piped straight from the environment), and shows the attack chain: which page or file the injected instruction came from, what it said, how the decoy was exposed and what the agent tried to do."
+author: Jackson
+manifest_version: 2
+api_version: 1
+license: MIT
+homepage: https://github.com/mornslight/hermes-snare
+requires_hermes: ">=0.23.0"
+tags: [security, prompt-injection, canary, honeytoken]
+provides_tools: []
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - transform_llm_output
+config_schema:
+  lockdown:
+    type: bool
+    default: true
+    label: "Lock the session after a trip"
+    description: "After a blocked injection, every further tool call in that session asks for your approval until /snare reset."
+  env_canaries:
+    type: bool
+    default: true
+    label: "Plant decoys in command environments"
+    description: "Give terminal and code-execution commands the decoy PROD_AWS_* and PROD_DATABASE_URL variables."
+  block_env_exfil:
+    type: bool
+    default: true
+    label: "Block commands that read the decoys and use the network"
+    description: "Also blocks a command that reads a decoy variable (or dumps the whole environment) and talks to the network in the same call, even when the value itself never appears in the arguments."
