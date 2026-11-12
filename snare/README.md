@@ -47,6 +47,10 @@ injection looks like.
 | `/snare rotate` | Generate new decoys |
 | `/snare test <text>` | Check a string for decoys and injection markers |
 
+In the messaging gateway, where many people share one Hermes process, `status`, `incidents`,
+`last` and `report` show only the caller's own session, and `reset all` lifts only the caller's
+lockdown. In the CLI you own the whole log and see all of it.
+
 ## Is the trap actually set here?
 
 "No incidents" should mean nothing tripped, not that the trap was never set. Hermes only passes
@@ -101,6 +105,8 @@ Only public surfaces: `pre_tool_call` (the tripwire, returns `block` or `approve
   `/snare status` (see "Is the trap actually set here?").
 - The injection markers are heuristics used to *name the source*. They never decide a block.
 - The read ledger lives in memory, so attribution covers the current gateway process.
+- Everything is kept per session. An alert is shown only in the session that tripped it, and an
+  incident only ever names and quotes that session's own reads, never another user's.
 - Lockdown asks through Hermes's approval prompt, so in YOLO or other auto-approve modes it is advisory. The leaking call itself is always blocked.
 - snare is a tripwire, not a sandbox. Pair it with Hermes's approvals for anything you do not trust.
 

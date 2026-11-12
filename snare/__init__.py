@@ -30,13 +30,23 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_ID = "snare"
 _STATE_KEY = "canaries"
-_PENDING_TTL_S = 10 * 60
+# Surfaces where one person owns the whole process and its incident log. Everywhere else (the
+# messaging gateway) many users share one process, so /snare only shows the caller's own session.
+_PERSONAL_PLATFORMS = {"", "cli", "local"}
+_MAX_TASK_MAP = 1000
+# Alerts wait for their own session however long it takes; this only bounds memory in a
+# long-running gateway where some sessions trip and never reply again (oldest go first).
+_MAX_PENDING = 1000
 # Tools whose results are the agent's own writes, not content it read from somewhere.
 _NOT_READS = {"write_file", "patch", "todo", "clarify", "memory", "skill_manage", "send_message"}
 
 
 def _keys(**kw: Any) -> list[str]:
-    keys = [str(kw.get(k)) for k in ("session_id", "task_id") if kw.get(k)]
+    keys: list[str] = []
+    for name in ("session_id", "task_id"):
+        value = kw.get(name)
+        if value and str(value) not in keys:
+            keys.append(str(value))
     return keys or ["default"]
 
 
@@ -47,6 +57,9 @@ class Snare:
         self._lock = threading.Lock()
         self._locked: set[str] = set()
         self._pending: dict[str, dict[str, Any]] = {}
+        # task_id -> session_id, learned whenever a hook sees both. A tool call that arrives with a
+        # task_id alone still files its reads and alert under the session that owns the task.
+        self._task_session: dict[str, str] = {}
         self.profile = getattr(ctx, "profile_name", "") or "default"
         self.lockdown = bool(self._cfg("lockdown", True))
         self.block_env_exfil = bool(self._cfg("block_env_exfil", True))
@@ -111,10 +124,24 @@ class Snare:
             return {}
         return {n: self.canaries[n]["value"] for n in self.env_names if n in self.canaries}
 
+    # --- session identity ----------------------------------------------------------------------
+    def _session_keys(self, **kw: Any) -> list[str]:
+        """The keys this call's session is filed under. Never another session's: when the ids are
+        missing it is ``default``, and a task_id is only joined to the session_id it was seen with."""
+        session_id, task_id = kw.get("session_id"), kw.get("task_id")
+        with self._lock:
+            if session_id and task_id:
+                self._task_session[str(task_id)] = str(session_id)
+                while len(self._task_session) > _MAX_TASK_MAP:
+                    self._task_session.pop(next(iter(self._task_session)))
+            elif task_id and not session_id:
+                session_id = self._task_session.get(str(task_id))
+        return _keys(session_id=session_id, task_id=task_id)
+
     # --- hooks ---------------------------------------------------------------------------------
     def on_post_tool_call(self, tool_name: str = "", args: Any = None, result: Any = "", **kw: Any) -> None:
         try:
-            keys = _keys(**kw)
+            keys = self._session_keys(**kw)
             text = _detect.result_text(result)
             hit = self.matcher.find_in_text(text)
             if hit:
@@ -124,17 +151,18 @@ class Snare:
             if tool_name in _NOT_READS:
                 return
             scan = _detect.scan_injection(text) or {}
+            ingest = _chain.Ingest(
+                ts=time.time(), session=keys[0], tool=tool_name,
+                source=_detect.describe_source(tool_name, args),
+                suspicious=bool(scan.get("suspicious")), score=int(scan.get("score", 0)),
+                labels=list(scan.get("labels", [])), snippet=scan.get("snippet", ""))
             for k in keys:
-                self.ledger.add_ingest(_chain.Ingest(
-                    ts=time.time(), session=k, tool=tool_name,
-                    source=_detect.describe_source(tool_name, args),
-                    suspicious=bool(scan.get("suspicious")), score=int(scan.get("score", 0)),
-                    labels=list(scan.get("labels", [])), snippet=scan.get("snippet", "")))
+                self.ledger.add_ingest(ingest, session=k)
         except Exception as exc:  # an observer must never break the agent
             logger.debug("snare post_tool_call error: %s", exc)
 
     def on_pre_tool_call(self, tool_name: str = "", args: Any = None, **kw: Any) -> Optional[dict[str, Any]]:
-        keys = _keys(**kw)
+        keys = self._session_keys(**kw)
         try:
             hit = self.matcher.find(args)
             if hit:
@@ -159,7 +187,7 @@ class Snare:
         try:
             text = response_text or ""
             redacted = self.matcher.redact(text)
-            alert = self._take_pending(_keys(session_id=session_id, **kw))
+            alert = self._take_pending(self._session_keys(session_id=session_id, **kw))
             if alert is None and redacted == text:
                 return None
             return f"{alert}\n\n---\n\n{redacted}" if alert else redacted
@@ -192,18 +220,20 @@ class Snare:
                 enc = "" if att["encoding"] in ("plain", "") else f" ({att['encoding']})"
                 entry["more"].append(f"`{att['tool']}` {att['leaked']}{enc}: `{att['action']}`")
             for k in keys:
+                self._pending.pop(k, None)  # re-insert so the newest alerts are dropped last
                 self._pending[k] = entry
+            while len(self._pending) > _MAX_PENDING:
+                self._pending.pop(next(iter(self._pending)))
         logger.warning("snare: blocked %s leaking %s (incident %s)", tool_name, leaked, incident["id"])
         return {"action": "block", "message": _report.model_message(incident)}
 
     def _take_pending(self, keys: list[str]) -> Optional[str]:
+        """The alert waiting for this session, if any. Only ever this session's own: an alert
+        is never handed to whichever session happens to reply next."""
         with self._lock:
             entry = None
             for k in keys:
                 entry = entry or self._pending.get(k)
-            if entry is None:  # ids differ across hook surfaces: take a fresh unmatched alert
-                fresh = [e for e in self._pending.values() if time.time() - e["ts"] < _PENDING_TTL_S]
-                entry = fresh[-1] if fresh else None
             if entry is None:
                 return None
             for k in [k for k, v in self._pending.items() if v is entry]:
@@ -249,23 +279,38 @@ class Snare:
         return result
 
     # --- /snare ------------------------------------------------------------------------------
+    def _visible_incidents(self, limit: int, keys: list[str], shared: bool) -> list[dict[str, Any]]:
+        rows = _report.read_incidents(self.data_dir, limit)
+        if shared:  # a gateway user sees only incidents their own session tripped
+            rows = [r for r in rows if r.get("session") in keys]
+        return rows
+
     def command(self, raw_args: str = "", session_id: str = "", **kw: Any) -> str:
         parts = (raw_args or "").strip().split(None, 1)
         sub = parts[0].lower() if parts else "status"
         rest = parts[1] if len(parts) > 1 else ""
+        shared = str(kw.get("platform") or "").lower() not in _PERSONAL_PLATFORMS
+        keys = _keys(session_id=session_id, **kw)
         if sub == "status":
             check = self.backend_check(session_id=session_id, **kw)
-            incidents = _report.read_incidents(self.data_dir, 1000)
             planted = ", ".join(self.env_names) or "none (names already set in your environment)"
+            if shared:
+                mine = self._visible_incidents(1000, keys, shared)
+                locked = any(k in self._locked for k in keys)
+                counts = (f"Incidents in this session: {len(mine)}. "
+                          f"This session is {'locked' if locked else 'not locked'}. ")
+                log = ""
+            else:
+                incidents = _report.read_incidents(self.data_dir, 1000)
+                counts = f"Incidents so far: {len(incidents)}. Locked sessions: {len(self._locked)}. "
+                log = f"\nAudit log: {self.data_dir / 'incidents.jsonl'}"
             return (f"Snare is on. Decoy names: {planted}.\n"
                     f"{check.line()}\n"
-                    f"Incidents so far: {len(incidents)}. Locked sessions: {len(self._locked)}. "
-                    f"Lockdown after a trip: {'on' if self.lockdown else 'off'}.\n"
-                    f"Audit log: {self.data_dir / 'incidents.jsonl'}")
+                    f"{counts}Lockdown after a trip: {'on' if self.lockdown else 'off'}.{log}")
         if sub in ("selftest", "check"):
             return self.backend_check(force=True, session_id=session_id, **kw).line()
         if sub in ("incidents", "log"):
-            rows = _report.read_incidents(self.data_dir, 10)
+            rows = self._visible_incidents(1000 if shared else 10, keys, shared)[-10:]
             if not rows:
                 return "No incidents yet."
             out = []
@@ -275,20 +320,21 @@ class Snare:
                 out.append(f"{r['id']}  {att['tool']} -> {att['leaked']}  from {src}")
             return "\n".join(out)
         if sub in ("last", "report"):
-            rows = _report.read_incidents(self.data_dir, 50)
+            rows = self._visible_incidents(1000 if shared else 50, keys, shared)
             if rest:
                 rows = [r for r in rows if r["id"].startswith(rest.strip())]
             if not rows:
                 return "No incidents yet."
             return _report.alert_text(rows[-1], locked=False)
         if sub == "reset":
-            keys = _keys(session_id=session_id, **kw)
             with self._lock:
-                if rest.strip() == "all":
+                # A command knows its session_id; the lock may also be filed under that session's task ids.
+                keys = keys + [t for t, sid in self._task_session.items() if sid in keys]
+                if rest.strip() == "all" and not shared:
                     self._locked.clear()
                 else:
                     self._locked.difference_update(keys)
-                    if keys == ["default"]:
+                    if keys == ["default"] and not shared:
                         self._locked.clear()
             return "Snare lockdown cleared. The tripwire stays armed."
         if sub == "rotate":

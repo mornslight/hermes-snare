@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 _MAX_EVENTS_PER_SESSION = 60
-_MAX_GLOBAL = 200
-_GLOBAL_WINDOW_S = 15 * 60
 
 
 @dataclass
@@ -35,31 +33,32 @@ class Exposure:
 
 
 class Ledger:
-    """Thread-safe, in-memory, bounded. Nothing here is written to disk until an incident."""
+    """Thread-safe, in-memory, bounded. Nothing here is written to disk until an incident.
+
+    Every lookup is by the keys of one session. There is no cross-session view: in the messaging
+    gateway many users share one process, and an incident must never name or quote another
+    user's reads."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._ingests: dict[str, deque] = {}
         self._exposures: dict[str, deque] = {}
-        self._global: deque = deque(maxlen=_MAX_GLOBAL)
 
-    def add_ingest(self, ev: Ingest) -> None:
+    def add_ingest(self, ev: Ingest, session: Optional[str] = None) -> None:
+        """File ``ev`` under ``session`` (default: its own session). One read can be filed under
+        both ids of the same session; lookups count it once."""
         with self._lock:
-            self._ingests.setdefault(ev.session, deque(maxlen=_MAX_EVENTS_PER_SESSION)).append(ev)
-            self._global.append(ev)
+            key = session or ev.session
+            self._ingests.setdefault(key, deque(maxlen=_MAX_EVENTS_PER_SESSION)).append(ev)
 
     def add_exposure(self, ev: Exposure) -> None:
         with self._lock:
             self._exposures.setdefault(ev.session, deque(maxlen=_MAX_EVENTS_PER_SESSION)).append(ev)
 
     def _session_ingests(self, keys: list[str]) -> list[Ingest]:
-        found: list[Ingest] = []
-        for k in keys:
-            found.extend(self._ingests.get(k, ()))
-        if not found:  # ids differ between hook surfaces on some paths: fall back to recent history
-            cutoff = time.time() - _GLOBAL_WINDOW_S
-            found = [e for e in self._global if e.ts >= cutoff]
-        return sorted(found, key=lambda e: e.ts)
+        # The same read can be filed under a session's session_id and its task_id: count it once.
+        found = {id(e): e for k in keys for e in self._ingests.get(k, ())}
+        return sorted(found.values(), key=lambda e: e.ts)
 
     def culprit(self, keys: list[str]) -> tuple[Optional[Ingest], bool]:
         """The most likely injection source: newest suspicious read, else the newest read at all.
